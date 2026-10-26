@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contador de calabacines</title>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.all.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<style>
+:root{--bg:#f2f4ec;--panel:#fff;--ink:#1d2a1a;--mute:#69745f;--line:#d5dac8;--accent:#2f6b2f;--accent-ink:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#141a12;--panel:#1c2419;--ink:#e6ecdc;--mute:#8e9a82;--line:#2e392a;--accent:#8fd16a;--accent-ink:#10200a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 Georgia,"Iowan Old Style",serif}
+main{max-width:1000px;margin:0 auto;padding:24px 16px 60px}
+h1{font-size:2rem;margin:0 0 4px;letter-spacing:-.02em}
+p.sub{margin:0 0 18px;color:var(--mute)}
+.step{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:12px}
+.step h2{font-size:1.02rem;margin:0 0 8px}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:8px;font:.9rem system-ui,sans-serif}
+label{display:flex;gap:8px;align-items:center}
+input[type=range]{accent-color:var(--accent)}
+input[type=text],select{padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font:inherit}
+input[type=text]{flex:1;min-width:180px}
+button{background:var(--accent);color:var(--accent-ink);border:0;border-radius:8px;padding:9px 16px;font:600 .92rem system-ui,sans-serif;cursor:pointer}
+button.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button.alt[aria-pressed=true]{border-color:var(--accent);color:var(--accent);font-weight:700}
+button.big{padding:12px 22px;font-size:1rem}
+button:disabled{opacity:.4;cursor:not-allowed}
+button:focus-visible,.drop:focus-visible{outline:3px solid #ff9f1c;outline-offset:2px}
+.drop{border:2px dashed var(--line);border-radius:8px;padding:20px;text-align:center;color:var(--mute);cursor:pointer;margin-top:8px}
+.drop.over,.drop:hover{border-color:var(--accent)}
+input[type=file]{display:none}
+.st{font:.88rem system-ui,sans-serif;color:var(--mute);margin-top:6px;min-height:1.3em}
+.st.err{color:#c0392b}
+#count{font-size:2.4rem;line-height:1;margin:0;display:inline}
+canvas#cv{max-width:100%;height:auto;border-radius:8px;display:block;margin-top:10px;background:#000;min-height:40px}
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font:.88rem system-ui,sans-serif}
+th,td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--mute);font-weight:600}
+td.n{text-align:right}
+td button{padding:2px 8px}
+#video{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.hide{display:none!important}
+</style>
+</head>
+<body>
+<main>
+<h1>Contador de calabacines</h1>
+<p class="sub">YOLOv8-seg en tu navegador. Ni el modelo ni las fotos salen de tu dispositivo.</p>
+
+<section class="step">
+<h2>Modelo</h2>
+<div class="row">
+<label>Motor <select id="ep"><option value="webgpu,wasm">WebGPU → CPU</option><option value="wasm">Solo CPU</option></select></label>
+<button class="alt" id="reload">Recargar desde GitHub</button>
+<button class="alt" id="localBtn">Usar un .onnx local</button>
+<input type="file" id="fModel" accept=".onnx">
+</div>
+<div class="st" id="status">Iniciando…</div>
+</section>
+
+<section class="step">
+<h2>Imagen</h2>
+<div class="row" style="margin-top:0">
+<button class="alt" id="tabCam" aria-pressed="true">Cámara en directo</button>
+<button class="alt" id="tabPhoto" aria-pressed="false">Subir foto</button>
+<select id="camSel" aria-label="Cámara"></select>
+</div>
+<div class="drop hide" id="drop" tabindex="0" role="button"><b>Arrastra una foto</b> o haz clic para elegirla</div>
+<input type="file" id="fImg" accept="image/*">
+<video id="video" playsinline muted autoplay></video>
+<canvas id="cv" width="10" height="10"></canvas>
+<div class="row">
+<label>Confianza <input type="range" id="thr" min="0.05" max="0.95" step="0.01" value="0.25"> <span id="thrv">0.25</span></label>
+<label>NMS <input type="range" id="nms" min="0.1" max="0.9" step="0.05" value="0.45"> <span id="nmsv">0.45</span></label>
+<label><input type="checkbox" id="masks" checked> Máscaras en la foto guardada</label>
+</div>
+<div class="row"><span><p id="count">–</p> calabacines</span> <span class="st" id="ms" style="margin:0"></span></div>
+</section>
+
+<section class="step">
+<h2>Nombre y captura</h2>
+<div class="row" style="margin-top:0">
+<input type="text" id="name" placeholder="Nombre de la foto (se rellena al leer un QR)" aria-label="Nombre">
+<button class="alt" id="scan">Escanear QR</button>
+<button class="alt" id="clearName">Borrar nombre</button>
+</div>
+<div class="row"><button class="big" id="cap" disabled>Guardar foto y datos</button>
+<label><input type="checkbox" id="auto" checked> Descargar la foto al guardar</label></div>
+<div class="st" id="msg">Si el nombre está vacío, se buscará un QR dentro de la propia foto.</div>
+</section>
+
+<section class="step">
+<h2>Registros</h2>
+<div class="row" style="margin-top:0"><button class="alt" id="csv">Descargar CSV</button><button class="alt" id="clear">Vaciar tabla</button></div>
+<div class="tw"><table><thead><tr><th>#</th><th>Nombre</th><th class="n">Calabacines</th><th class="n">Confianza media</th><th>Fecha y hora</th><th>Archivo</th><th></th></tr></thead><tbody id="tb"></tbody></table></div>
+</section>
+</main>
+
+<script>
+const MODEL_URL='https://raw.githubusercontent.com/dany031290/count_long_fruits/main/best.onnx';
+const KEY='calabacines_registros';
+const $=id=>document.getElementById(id);
+const COLORS=['#ff5a1f','#1fa2ff','#e83e8c','#ffd000','#9b5de5','#00c2a8','#ff8fab','#7bd389'];
+const cv=$('cv'),video=$('video'),pc=document.createElement('canvas'),qc=document.createElement('canvas');
+let session=null,S=640,mode='cam',stream=null,photo=null,live=null,busy=false,scanning=false,lastScan=0,records=[];
+const st=(t,e)=>{$('status').textContent=t;$('status').className='st'+(e?' err':'')};
+const msg=(t,e)=>{$('msg').textContent=t;$('msg').className='st'+(e?' err':'')};
+ort.env.wasm.wasmPaths='https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
+if(!self.crossOriginIsolated)ort.env.wasm.numThreads=1;
+
+/* ---------- modelo ---------- */
+async function initModel(buf){
+  session=null;$('cap').disabled=true;st('Inicializando el modelo…');
+  session=await ort.InferenceSession.create(buf,{executionProviders:$('ep').value.split(','),graphOptimizationLevel:'all'});
+  const m=session.inputMetadata,shp=Array.isArray(m)?m[0]?.shape:m?.[session.inputNames[0]]?.shape;
+  S=(shp&&typeof shp[2]==='number')?shp[2]:640;
+  st(`Modelo listo (entrada ${S}×${S}).`);$('cap').disabled=false;
+  if(photo)photo.res=null,runPhoto();
+}
+async function loadRemote(){
+  try{
+    st('Descargando best.onnx desde GitHub…');
+    const r=await fetch(MODEL_URL);if(!r.ok)throw new Error('HTTP '+r.status);
+    await initModel(new Uint8Array(await r.arrayBuffer()));
+  }catch(e){console.error(e);st('No se pudo cargar el modelo: '+e.message+'. Usa «Usar un .onnx local».',true)}
+}
+$('reload').onclick=loadRemote;
+$('localBtn').onclick=()=>$('fModel').click();
+$('fModel').onchange=async e=>{const f=e.target.files[0];if(!f)return;
+  try{await initModel(new Uint8Array(await f.arrayBuffer()))}catch(err){st('Error: '+err.message,true)}};
+
+/* ---------- inferencia ---------- */
+async function infer(src,W,H){
+  if(pc.width!==S)pc.width=pc.height=S;
+  const r=Math.min(S/W,S/H),nw=Math.round(W*r),nh=Math.round(H*r),px=Math.floor((S-nw)/2),py=Math.floor((S-nh)/2);
+  const x=pc.getContext('2d',{willReadFrequently:true});
+  x.fillStyle='rgb(114,114,114)';x.fillRect(0,0,S,S);x.drawImage(src,px,py,nw,nh);
+  const d=x.getImageData(0,0,S,S).data,n=S*S,t=new Float32Array(3*n);
+  for(let i=0;i<n;i++){t[i]=d[i*4]/255;t[n+i]=d[i*4+1]/255;t[2*n+i]=d[i*4+2]/255}
+  const res=await session.run({[session.inputNames[0]]:new ort.Tensor('float32',t,[1,3,S,S])});
+  const [a,b]=session.outputNames.map(k=>res[k]);
+  return {o0:a.data,d0:a.dims,o1:b.data,d1:b.dims,r,px,py};
+}
+const iou=(a,b)=>{const x1=Math.max(a[0],b[0]),y1=Math.max(a[1],b[1]),x2=Math.min(a[2],b[2]),y2=Math.min(a[3],b[3]);
+  const i=Math.max(0,x2-x1)*Math.max(0,y2-y1);return i/((a[2]-a[0])*(a[3]-a[1])+(b[2]-b[0])*(b[3]-b[1])-i||1)};
+function post(res){
+  const thr=+$('thr').value,nmsT=+$('nms').value,{o0,d0,d1,r,px,py}=res,C=d0[1],N=d0[2],nc=C-4-d1[1],cand=[];
+  for(let i=0;i<N;i++){let s=0;for(let k=0;k<nc;k++)s=Math.max(s,o0[(4+k)*N+i]);if(s<thr)continue;
+    const cx=o0[i],cy=o0[N+i],w=o0[2*N+i],h=o0[3*N+i];cand.push({s,i,m:[cx-w/2,cy-h/2,cx+w/2,cy+h/2]})}
+  cand.sort((a,b)=>b.s-a.s);const keep=[];
+  for(const d of cand)if(keep.every(k=>iou(k.m,d.m)<nmsT))keep.push(d);
+  for(const d of keep)d.b=[(d.m[0]-px)/r,(d.m[1]-py)/r,(d.m[2]-px)/r,(d.m[3]-py)/r];
+  return keep;
+}
+function maskLayer(res,dets){
+  const {o0,d0,o1,d1}=res,N=d0[2],nm=d1[1],MH=d1[2],MW=d1[3],sc=MW/S,area=MH*MW,nc=d0[1]-4-nm;
+  const c=document.createElement('canvas');c.width=MW;c.height=MH;const x=c.getContext('2d'),id=x.createImageData(MW,MH),p=id.data;
+  dets.forEach((d,j)=>{const col=COLORS[j%8],R=parseInt(col.slice(1,3),16),G=parseInt(col.slice(3,5),16),B=parseInt(col.slice(5,7),16);
+    const co=new Float32Array(nm);for(let k=0;k<nm;k++)co[k]=o0[(4+nc+k)*N+d.i];
+    const x1=Math.max(0,Math.floor(d.m[0]*sc)),y1=Math.max(0,Math.floor(d.m[1]*sc)),x2=Math.min(MW,Math.ceil(d.m[2]*sc)),y2=Math.min(MH,Math.ceil(d.m[3]*sc));
+    for(let yy=y1;yy<y2;yy++)for(let xx=x1;xx<x2;xx++){let v=0;const o=yy*MW+xx;for(let k=0;k<nm;k++)v+=co[k]*o1[k*area+o];
+      if(v>0){const q=o*4;p[q]=R;p[q+1]=G;p[q+2]=B;p[q+3]=120}}});
+  x.putImageData(id,0,0);return c;
+}
+function boxes(x,dets,W){
+  x.lineWidth=Math.max(2,W/300);x.font=`${Math.max(12,W/55)}px system-ui`;
+  dets.forEach((d,j)=>{const [x1,y1,x2,y2]=d.b,col=COLORS[j%8];x.strokeStyle=col;x.strokeRect(x1,y1,x2-x1,y2-y1);
+    const t=(d.s*100).toFixed(0)+'%',tw=x.measureText(t).width+8,th=parseInt(x.font)+6;
+    x.fillStyle=col;x.fillRect(x1,Math.max(0,y1-th),tw,th);x.fillStyle='#000';x.fillText(t,x1+4,Math.max(th-5,y1-5))});
+}
+function paint(c,src,W,H,res,dets,withMasks){
+  c.width=W;c.height=H;const x=c.getContext('2d');x.drawImage(src,0,0,W,H);
+  if(withMasks&&dets.length){x.imageSmoothingQuality='high';x.drawImage(maskLayer(res,dets),-res.px/res.r,-res.py/res.r,S/res.r,S/res.r)}
+  boxes(x,dets,W);
+}
+
+/* ---------- cámara en directo ---------- */
+async function startCam(id){
+  stopCam();
+  try{
+    const v={width:{ideal:1920},height:{ideal:1080}};
+    if(id)v.deviceId={exact:id};else v.facingMode={ideal:'environment'};
+    stream=await navigator.mediaDevices.getUserMedia({video:v,audio:false});
+    video.srcObject=stream;await video.play();
+    const devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput'),cur=stream.getVideoTracks()[0].getSettings().deviceId;
+    $('camSel').replaceChildren(...devs.map((d,i)=>{const o=document.createElement('option');o.value=d.deviceId;o.textContent=d.label||'Cámara '+(i+1);o.selected=d.deviceId===cur;return o}));
+    msg('Cámara activa.');
+  }catch(e){msg('No se pudo abrir la cámara: '+e.message+' (hace falta https o localhost).',true)}
+}
+function stopCam(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}video.srcObject=null;live=null}
+async function liveInfer(){
+  busy=true;
+  try{const t0=performance.now(),W=video.videoWidth,H=video.videoHeight,res=await infer(video,W,H);
+    live={dets:post(res)};$('count').textContent=live.dets.length;$('ms').textContent=Math.round(performance.now()-t0)+' ms/fotograma'}
+  catch(e){console.error(e);msg('Error en la detección: '+e.message,true)}
+  busy=false;
+}
+function frame(t){
+  if(mode==='cam'&&stream&&video.videoWidth>0){
+    const W=video.videoWidth,H=video.videoHeight;if(cv.width!==W||cv.height!==H){cv.width=W;cv.height=H}
+    const x=cv.getContext('2d');x.drawImage(video,0,0,W,H);if(live)boxes(x,live.dets,W);
+    if(session&&!busy)liveInfer();
+    if(scanning&&t-lastScan>300){lastScan=t;const q=decodeQR(video,W,H);if(q)gotQR(q)}
+  }
+  requestAnimationFrame(frame);
+}
+
+/* ---------- foto subida ---------- */
+function loadPhoto(f){const im=new Image();im.onload=()=>{photo={img:im,W:im.naturalWidth,H:im.naturalHeight,res:null};runPhoto()};im.src=URL.createObjectURL(f)}
+async function runPhoto(){
+  if(!photo)return;
+  if(!session){paint(cv,photo.img,photo.W,photo.H,null,[],false);return}
+  if(!photo.res)photo.res=await infer(photo.img,photo.W,photo.H);
+  const d=post(photo.res);paint(cv,photo.img,photo.W,photo.H,photo.res,d,$('masks').checked);$('count').textContent=d.length;
+}
+
+/* ---------- QR ---------- */
+function decodeQR(src,W,H){
+  const k=Math.min(1,1280/Math.max(W,H)),w=Math.round(W*k),h=Math.round(H*k);qc.width=w;qc.height=h;
+  const x=qc.getContext('2d',{willReadFrequently:true});x.drawImage(src,0,0,w,h);
+  const c=jsQR(x.getImageData(0,0,w,h).data,w,h,{inversionAttempts:'attemptBoth'});return c?c.data:null;
+}
+function gotQR(t){scanning=false;$('scan').textContent='Escanear QR';$('name').value=t.replace(/\s+/g,' ').trim();msg('QR leído: '+$('name').value)}
+$('scan').onclick=()=>{
+  if(mode==='cam'){scanning=!scanning;$('scan').textContent=scanning?'Detener escaneo':'Escanear QR';msg(scanning?'Apunta la cámara al QR…':'Escaneo detenido.')}
+  else if(photo){const q=decodeQR(photo.img,photo.W,photo.H);q?gotQR(q):msg('No se encontró ningún QR en la foto.',true)}
+  else msg('Sube primero una foto.',true);
+};
+$('clearName').onclick=()=>{$('name').value='';msg('Nombre borrado.')};
+
+/* ---------- captura y tabla ---------- */
+const safe=s=>s.replace(/[\\\/:*?"<>|\r\n\t]+/g,'_').replace(/\s+/g,' ').replace(/^[\s.]+|[\s.]+$/g,'').slice(0,100);
+const pad=n=>String(n).padStart(2,'0');
+async function capture(){
+  if(!session)return;
+  $('cap').disabled=true;
+  try{
+    let src,W,H,res;
+    if(mode==='cam'){
+      if(!video.videoWidth)throw new Error('La cámara no está lista.');
+      while(busy)await new Promise(r=>setTimeout(r,30));
+      busy=true;W=video.videoWidth;H=video.videoHeight;src=document.createElement('canvas');src.width=W;src.height=H;src.getContext('2d').drawImage(video,0,0);
+      try{res=await infer(src,W,H)}finally{busy=false}
+    }else{if(!photo)throw new Error('Sube primero una foto.');src=photo.img;W=photo.W;H=photo.H;if(!photo.res)photo.res=await infer(src,W,H);res=photo.res}
+    const dets=post(res);let name=$('name').value.trim();
+    if(!name){const q=decodeQR(src,W,H);if(q){name=q.replace(/\s+/g,' ').trim();$('name').value=name}}
+    const out=document.createElement('canvas');paint(out,src,W,H,res,dets,$('masks').checked);
+    const now=new Date(),stamp=`${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const base=safe(name)||('foto_'+stamp),dup=records.filter(r=>r.base===base).length,file=base+(dup?'_'+(dup+1):'')+'.jpg';
+    const conf=dets.length?dets.reduce((a,d)=>a+d.s,0)/dets.length*100:0;
+    records.push({base,name:name||'(sin nombre)',count:dets.length,conf:+conf.toFixed(1),time:`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`,file});
+    persist();render();
+    if($('auto').checked){const blob=await new Promise(r=>out.toBlob(r,'image/jpeg',0.92));const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=file;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000)}
+    msg(`Guardado: ${file} (${dets.length} calabacines)`);
+  }catch(e){console.error(e);msg('Error al guardar: '+e.message,true)}
+  $('cap').disabled=false;
+}
+function persist(){try{localStorage.setItem(KEY,JSON.stringify(records))}catch(e){}}
+function render(){
+  $('tb').replaceChildren(...records.map((r,i)=>{
+    const tr=document.createElement('tr');
+    [[i+1],[r.name],[r.count,'n'],[r.count?r.conf.toFixed(1)+'%':'–','n'],[r.time],[r.file]].forEach(([v,c])=>{const td=document.createElement('td');td.textContent=v;if(c)td.className=c;tr.append(td)});
+    const td=document.createElement('td'),b=document.createElement('button');b.className='alt';b.textContent='✕';b.title='Quitar fila';b.setAttribute('aria-label','Quitar fila');
+    b.onclick=()=>{records.splice(i,1);persist();render()};td.append(b);tr.append(td);return tr}));
+}
+$('csv').onclick=()=>{
+  const q=v=>'"'+String(v).replace(/"/g,'""')+'"',rows=[['n','nombre','calabacines','confianza_media_%','fecha_hora','archivo'],...records.map((r,i)=>[i+1,r.name,r.count,r.conf,r.time,r.file])];
+  const blob=new Blob(['\ufeff'+rows.map(r=>r.map(q).join(';')).join('\r\n')],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='registros_calabacines.csv';a.click();
+};
+$('clear').onclick=()=>{if(records.length&&confirm('¿Vaciar toda la tabla?')){records=[];persist();render()}};
+$('cap').onclick=capture;
+
+/* ---------- interfaz ---------- */
+function setMode(m){
+  mode=m;$('tabCam').setAttribute('aria-pressed',m==='cam');$('tabPhoto').setAttribute('aria-pressed',m==='photo');
+  $('drop').classList.toggle('hide',m!=='photo');$('camSel').classList.toggle('hide',m!=='cam');
+  scanning=false;$('scan').textContent='Escanear QR';$('count').textContent='–';$('ms').textContent='';
+  if(m==='cam')startCam();else{stopCam();photo?runPhoto():(cv.width=10,cv.height=10)}
+}
+$('tabCam').onclick=()=>setMode('cam');$('tabPhoto').onclick=()=>setMode('photo');
+$('camSel').onchange=e=>startCam(e.target.value);
+$('drop').onclick=()=>$('fImg').click();
+$('drop').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$('fImg').click()}};
+$('drop').ondragover=e=>{e.preventDefault();$('drop').classList.add('over')};
+$('drop').ondragleave=()=>$('drop').classList.remove('over');
+$('drop').ondrop=e=>{e.preventDefault();$('drop').classList.remove('over');if(e.dataTransfer.files[0])loadPhoto(e.dataTransfer.files[0])};
+$('fImg').onchange=e=>{if(e.target.files[0])loadPhoto(e.target.files[0])};
+$('thr').oninput=()=>{$('thrv').textContent=(+$('thr').value).toFixed(2);if(mode==='photo')runPhoto()};
+$('nms').oninput=()=>{$('nmsv').textContent=(+$('nms').value).toFixed(2);if(mode==='photo')runPhoto()};
+$('masks').onchange=()=>{if(mode==='photo')runPhoto()};
+
+try{records=JSON.parse(localStorage.getItem(KEY)||'[]')}catch(e){records=[]}
+render();setMode('cam');requestAnimationFrame(frame);loadRemote();
+</script>
+</body>
+</html>
